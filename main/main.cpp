@@ -377,6 +377,16 @@ int main(int argc, char** argv)
                 &app, SLOT(slotLoadDocFromMemory(QString)));
         QObject::connect(webAccess, SIGNAL(storeAutostartProject(QString)),
                 &app, SLOT(slotSaveAutostart(QString)));
+
+        // allow the web "studio" page to save the current workspace file
+        App *appPtr = &app;
+        webAccess->setProjectSaveHandler([appPtr]() {
+            if (appPtr->fileName().isEmpty())
+                return WebAccess::SaveNoFileName;
+            if (appPtr->saveXML(appPtr->fileName()) != QFile::NoError)
+                return WebAccess::SaveError;
+            return WebAccess::SaveOk;
+        });
     }
 
     return qapp.exec();

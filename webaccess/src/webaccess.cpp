@@ -23,6 +23,7 @@
 
 #include "webaccesssimpledesk.h"
 #include "webaccessnetwork.h"
+#include "webaccessstudio.h"
 #include "commonjscss.h"
 #include "vcaudiotriggers.h"
 #include "virtualconsole.h"
@@ -71,6 +72,14 @@ void WebAccess::slotHandleHTTPRequest(QHttpRequest *req, QHttpResponse *resp)
     QString content;
 
     qDebug() << Q_FUNC_INFO << req->methodString() << req->url();
+
+    // short URL for the studio scene editor page
+    if (reqUrl == "/studio")
+    {
+        if (serveWebFile(resp, "/studio.html", "text/html") == false)
+            sendNotFound(resp);
+        return;
+    }
 
     CommonRequestResult commonResult = handleCommonHTTPRequest(req, resp, user, reqUrl, content);
     if (commonResult == CommonRequestResult::Handled)
@@ -126,6 +135,9 @@ void WebAccess::slotHandleWebSocketRequest(QHttpConnection *conn, QString data)
         QString apiCmd = cmdList[1];
         // compose the basic API reply messages
         QString wsAPIMessage = QString("QLC+API|%1|").arg(apiCmd);
+
+        if (handleStudioAPI(conn, user, apiCmd, cmdList))
+            return;
 
         if (apiCmd == "isProjectLoaded")
         {
@@ -2022,4 +2034,103 @@ QString WebAccess::getSimpleDeskHTML() const
 void WebAccess::slotVCLoaded()
 {
     m_pendingProjectLoaded = true;
+}
+
+/*********************************************************************
+ * Studio scene editor API
+ *********************************************************************/
+
+void WebAccess::setProjectSaveHandler(std::function<SaveResult()> handler)
+{
+    m_projectSaveHandler = handler;
+}
+
+bool WebAccess::handleStudioAPI(QHttpConnection *conn, const WebAccessUser *user,
+                                const QString &apiCmd, const QStringList &cmdList)
+{
+    static const QStringList studioCommands = QStringList()
+        << "getScenesJSON" << "getSceneJSON" << "setSceneValue"
+        << "unsetSceneValue" << "soloScene" << "getProjectStatus" << "saveProject";
+
+    if (studioCommands.contains(apiCmd) == false)
+        return false;
+
+    // reading scenes and switching between them is allowed to VC users,
+    // editing and saving requires the Simple Desk access level
+    bool isEditCommand = (apiCmd == "setSceneValue" || apiCmd == "unsetSceneValue" ||
+                          apiCmd == "saveProject");
+    WebAccessUserLevel requiredLevel = isEditCommand ? SIMPLE_DESK_AND_VC_LEVEL : VC_ONLY_LEVEL;
+
+    if (m_auth && user && user->level < requiredLevel)
+        return true;
+
+    QString reply = QString("QLC+API|%1|").arg(apiCmd);
+
+    if (apiCmd == "getScenesJSON")
+    {
+        reply.append(WebAccessStudio::scenesJSON(m_doc));
+    }
+    else if (apiCmd == "getSceneJSON")
+    {
+        if (cmdList.count() < 3)
+            return true;
+
+        QString json = WebAccessStudio::sceneJSON(m_doc, cmdList[2].toUInt());
+        reply.append(json.isEmpty() ? QString("null") : json);
+    }
+    else if (apiCmd == "setSceneValue")
+    {
+        if (cmdList.count() < 6)
+            return true;
+
+        QString json = WebAccessStudio::setSceneValue(m_doc, cmdList[2].toUInt(), cmdList[3].toUInt(),
+                                                      cmdList[4].toUInt(), cmdList[5].toInt());
+        // notify every connected client, so other tablets stay in sync
+        if (json.isEmpty() == false)
+            sendWebSocketMessage(QString("QLC+API|sceneValueChanged|%1").arg(json));
+        return true;
+    }
+    else if (apiCmd == "unsetSceneValue")
+    {
+        if (cmdList.count() < 5)
+            return true;
+
+        QString json = WebAccessStudio::unsetSceneValue(m_doc, cmdList[2].toUInt(),
+                                                        cmdList[3].toUInt(), cmdList[4].toUInt());
+        if (json.isEmpty() == false)
+            sendWebSocketMessage(QString("QLC+API|sceneValueChanged|%1").arg(json));
+        return true;
+    }
+    else if (apiCmd == "soloScene")
+    {
+        if (cmdList.count() < 3)
+            return true;
+
+        // running states are notified via the FUNCTION|<id>|<state> messages
+        WebAccessStudio::soloScene(m_doc, cmdList[2].toUInt());
+        return true;
+    }
+    else if (apiCmd == "getProjectStatus")
+    {
+        reply.append(WebAccessStudio::projectStatusJSON(m_doc));
+    }
+    else if (apiCmd == "saveProject")
+    {
+        QString result = "unsupported";
+        if (m_projectSaveHandler)
+        {
+            switch (m_projectSaveHandler())
+            {
+                case SaveOk: result = "ok"; break;
+                case SaveNoFileName: result = "noFileName"; break;
+                default: result = "error"; break;
+            }
+        }
+        reply.append(QString("{\"result\":\"%1\"}").arg(result));
+        sendWebSocketMessage(QString("QLC+API|getProjectStatus|%1")
+                             .arg(WebAccessStudio::projectStatusJSON(m_doc)));
+    }
+
+    conn->webSocketWrite(reply);
+    return true;
 }

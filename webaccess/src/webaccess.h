@@ -20,6 +20,8 @@
 #ifndef WEBACCESS_H
 #define WEBACCESS_H
 
+#include <functional>
+
 #include "webaccessbase.h"
 
 class VCAudioTriggers;
@@ -68,6 +70,20 @@ public:
 
     QString getSimpleDeskHTML() const;
 
+    /** Result codes returned by the project save handler */
+    enum SaveResult
+    {
+        SaveOk = 0,
+        SaveNoFileName,
+        SaveError
+    };
+
+    /**
+     * Set the function used by the "saveProject" web API command.
+     * The application owns the workspace file name, so it provides this.
+     */
+    void setProjectSaveHandler(std::function<SaveResult()> handler);
+
 protected slots:
     void slotHandleHTTPRequest(QHttpRequest *req, QHttpResponse *resp) override;
     void slotHandleWebSocketRequest(QHttpConnection *conn, QString data) override;
@@ -104,6 +120,11 @@ protected slots:
 protected:
     QString m_JScode;
     QString m_CSScode;
+    std::function<SaveResult()> m_projectSaveHandler;
+
+    /** Handle the studio scene editing API. Returns true if cmd was handled */
+    bool handleStudioAPI(QHttpConnection *conn, const WebAccessUser *user,
+                         const QString &apiCmd, const QStringList &cmdList);
 
     void handleProjectLoad(const QByteArray &projectXml) override;
     void handleAutostartProject(const QString &path) override;
